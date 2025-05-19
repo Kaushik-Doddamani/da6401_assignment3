@@ -1,0 +1,61 @@
+# ──────────────────────────────────────────────────────────────
+# Sweep configuration for Q2 (Dakshina Hindi sweep)
+# ──────────────────────────────────────────────────────────────
+
+method: bayes            # Bayesian optimization
+metric:
+  name: dev_perplexity
+  goal: minimize
+
+parameters:
+  # Number of training epochs
+  epochs:
+    values: [5, 10, 15, 20]
+
+  # Character embedding methods
+  embedding_method:
+    values: ["learned", "onehot", "char_cnn", "svd_ppmi"]
+
+  # Embedding dimensions
+  embedding_size:
+    values: [32, 64, 128, 256, 512]
+
+  # RNN hidden state sizes
+  hidden_size:
+    values: [32, 64, 128, 256, 512]
+
+  # Number of RNN layers (must match in encoder & decoder)
+  encoder_layers:
+    values: [1, 2, 3]
+  decoder_layers:
+    values: [1, 2, 3]
+
+  # RNN cell types
+  cell:
+    values: ["RNN", "GRU", "LSTM"]
+
+  # Dropout for multi-layer RNNs
+  dropout:
+    values: [0.1, 0.2, 0.3]
+
+  # Learning rate
+  learning_rate:
+    min: 1e-4
+    max: 5e-3
+
+  # Batch size
+  batch_size:
+    values: [32, 64, 128]
+
+  # Teacher forcing ratio
+  teacher_forcing:
+    values: [0.3, 0.5, 0.7, 1.0]
+
+  # Optionally sample by attestations
+  use_attestations:
+    values: [true, false]
+
+early_terminate:
+  type: hyperband
+  max_iter: 20
+# ──────────────────────────────────────────────────────────────
