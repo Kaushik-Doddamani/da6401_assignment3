@@ -32,7 +32,7 @@ import argparse
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Any
 import warnings
 import numpy as np
 import pandas as pd
@@ -594,7 +594,8 @@ class Seq2Seq(nn.Module):
     def beam_search_decode(
         self,
         src: torch.LongTensor,
-        src_lengths: torch.LongTensor, *,
+        src_lengths: torch.LongTensor,
+        *,
         beam_size: int = 5,
         max_len: int = 50,
     ) -> torch.LongTensor:
@@ -603,39 +604,48 @@ class Seq2Seq(nn.Module):
         Returns the best sequence of token ids as a tensor of shape (1, <=max_len).
         """
         B = src.size(0)
-        assert B == 1, "beam_search_decode currently only supports batch_size=1"
+        assert B == 1, "beam_search_decode only supports batch_size=1 for now"
 
-        # 1) Encode and align
+        # 1) Encode & align hidden state
         hidden_state = self.encoder(src, src_lengths)
         hidden_state = _align_hidden_state(hidden_state, self.cfg.decoder_layers)
 
-        # Initialize beams: each is (sequence_list, cumulative_log_prob, hidden_state)
-        beams = [([self.cfg.sos_index], 0.0, hidden_state)]
+        # 2) Initialize beams: list of (sequence_ids, cumulative_log_prob, hidden_state)
+        beams: List[Tuple[List[int], float, Any]] = [
+            ([self.cfg.sos_index], 0.0, hidden_state)
+        ]
 
         for _ in range(max_len):
-            candidates: List[Tuple[List[int], float, Any]] = []
-            for seq, score, h_state in beams:
-                last_token = seq[-1]
-                # If already ended with <eos>, carry forward unchanged
+            all_candidates: List[Tuple[List[int], float, Any]] = []
+            # Expand each current beam
+            for seq_ids, cum_logprob, h_state in beams:
+                last_token = seq_ids[-1]
+                # if EOS already, just carry it forward
                 if last_token == self.cfg.eos_index:
-                    candidates.append((seq, score, h_state))
+                    all_candidates.append((seq_ids, cum_logprob, h_state))
                     continue
 
-                # Run one decoder step
+                # run one step
                 inp = torch.tensor([[last_token]], device=src.device)
-                logits, new_hidden = self.decoder(inp, h_state)  # (1,1,V)
-                log_probs = torch.log_softmax(logits.squeeze(1), dim=-1)  # (V,)
+                logits, new_h_state = self.decoder(inp, h_state)       # (1,1,V)
+                log_probs = torch.log_softmax(logits.squeeze(1), dim=-1)  # (1,V) → (V,)
 
-                # Expand top-k continuations
-                topk_vals, topk_idx = log_probs.topk(beam_size)
-                for log_p, idx in zip(topk_vals.tolist(), topk_idx.tolist()):
-                    candidates.append((seq + [idx], score + log_p, new_hidden))
+                # pick top-k continuations
+                # collapse the batch dimension so we get 1D lists
+                vals, idxs = log_probs.topk(beam_size, dim=-1)      # shape: (1, beam_size)
+                vals = vals[0].detach().cpu().tolist()               # → [v₁, v₂, …]
+                idxs = idxs[0].detach().cpu().tolist()               # → [i₁, i₂, …]
+                for log_p, idx in zip(vals, idxs):
+                    new_seq   = seq_ids + [idx]
+                    new_score = cum_logprob + log_p                 # log_p is now a float
+                    all_candidates.append((new_seq, new_score, new_h_state))
 
-            # Prune back to top beam_size
-            beams = sorted(candidates, key=lambda x: x[1], reverse=True)[:beam_size]
+            # keep best beam_size beams
+            beams = sorted(all_candidates, key=lambda x: x[1], reverse=True)[:beam_size]
 
-        # Choose best final beam
+        # pick the single best final sequence
         best_seq, best_score, _ = max(beams, key=lambda x: x[1])
+        # convert to tensor
         return torch.tensor(best_seq, dtype=torch.long, device=src.device).unsqueeze(0)
 
 
@@ -890,7 +900,7 @@ def main():
             pred_ids = model.greedy_decode(src_tensor, len_tensor, max_len=30)[0].tolist()
             romanized = src_vocab.decode(src_ids)
             gold       = tgt_vocab.decode(tgt_ids[1:])  # skip <sos>
-            pred_str   = tgt_vocab.decode(pred_ids)
+            pred_str   = tgt_vocab.decode(pred_ids[1:])  # skip <sos>
             print(f"{romanized:15} → {pred_str:15} (gold: {gold})")
 
 

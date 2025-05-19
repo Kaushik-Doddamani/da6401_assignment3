@@ -13,7 +13,6 @@ python solution_2.py \
     --mode sweep \
     --sweep_config sweep_config.yaml \
     --wandb_project transliteration \
-    --wandb_entity your_entity \
     --wandb_run_tag baseline \
     --gpu_ids 0 1 \
     --train_tsv ./lexicons/hi.translit.sampled.train.tsv \
@@ -25,7 +24,7 @@ python solution_2.py \
 python solution_2.py \
     --mode single \
     --wandb_project transliteration \
-    --wandb_entity your_entity \
+    --wandb_run_tag baseline \
     --train_tsv ./lexicons/hi.translit.sampled.train.tsv \
     --dev_tsv   ./lexicons/hi.translit.sampled.dev.tsv \
     --test_tsv  ./lexicons/hi.translit.sampled.test.tsv
@@ -148,14 +147,15 @@ def run_single_training(sweep_config: Dict[str, Any], static_args: argparse.Name
     optimizer = torch.optim.Adam(model.parameters(), lr=sweep_config["learning_rate"])
     loss_fn = torch.nn.CrossEntropyLoss(ignore_index=model_cfg.pad_index)
 
-    # ─── Unique, human-readable run name ─────────────────────────────
+    # ─── Unique run name ─────────────────────────────
     run_name = (
-        f"emb:{sweep_config['embedding_method']}-{sweep_config['embedding_size']}|"
-        f"cell:{sweep_config['cell']}|hid:{sweep_config['hidden_size']}|"
+        f"emb_method:{sweep_config['embedding_method']}|emb_size:{sweep_config['embedding_size']}|"
+        f"cell:{sweep_config['cell']}|hid_size:{sweep_config['hidden_size']}|"
         f"enc:{sweep_config['encoder_layers']}|dec:{sweep_config['decoder_layers']}|"
         f"dr:{sweep_config['dropout']}|lr:{sweep_config['learning_rate']}|"
         f"bs:{sweep_config['batch_size']}|tf:{sweep_config['teacher_forcing']}|"
-        f"ep:{sweep_config['epochs']}|beam:{sweep_config.get('beam_size',1)}"
+        f"ep:{sweep_config['epochs']}|beam:{sweep_config['beam_size']}|"
+        f"attest:{sweep_config['use_attestations']}"
     )
     wandb.run.name = run_name
     wandb.run.tags = [static_args.wandb_run_tag]
@@ -167,20 +167,30 @@ def run_single_training(sweep_config: Dict[str, Any], static_args: argparse.Name
         )
         dev_loss = eval_epoch(model, dev_loader, loss_fn, device)
 
+        # Log both raw loss and perplexity
         wandb.log({
             "epoch": epoch,
+            "train_loss": train_loss,
             "train_perplexity": math.exp(train_loss),
-            "dev_perplexity":   math.exp(dev_loss),
+            "dev_loss":   dev_loss,
+            "dev_perplexity": math.exp(dev_loss),
         })
 
     # ─── Final test evaluation ──────────────────────────────────────
     test_loss = eval_epoch(model, test_loader, loss_fn, device)
-    wandb.log({"test_perplexity": math.exp(test_loss)})
+    wandb.log({
+        "test_loss": test_loss,
+        "test_perplexity": math.exp(test_loss),
+    })
 
     # ─── Qualitative beam-search samples ─────────────────────────────
     beam = sweep_config.get("beam_size", 1)
     print(f"\nSample dev-set translations (beam_size={beam}):")
     model.eval()
+
+    # If DataParallel wrapped us, unwrap for decode methods:
+    inference_model = model.module if hasattr(model, "module") else model
+
     with torch.no_grad():
         for i in range(5):
             src_ids, tgt_ids = dev_dataset[i]  # dev_dataset returns (src, tgt)
@@ -188,22 +198,17 @@ def run_single_training(sweep_config: Dict[str, Any], static_args: argparse.Name
             src_tensor = torch.tensor([src_ids], device=device)
             len_tensor = torch.tensor([src_len], device=device)
 
-            # choose beam or greedy
-            if beam > 1:
-                pred_ids = model.beam_search_decode(
-                    src_tensor, len_tensor,
-                    beam_size=beam,
-                    max_len=30
-                )[0].tolist()
-            else:
-                pred_ids = model.greedy_decode(
-                    src_tensor, len_tensor,
-                    max_len=30
-                )[0].tolist()
+            # always use beam-search (beam_size may be 1)
+            pred_ids = inference_model.beam_search_decode(
+                src_tensor,
+                len_tensor,
+                beam_size=beam,
+                max_len=30
+            )[0].tolist()
 
             romanized = src_vocab.decode(src_ids)
             gold       = tgt_vocab.decode(tgt_ids[1:])  # skip <sos>
-            prediction = tgt_vocab.decode(pred_ids)
+            prediction = tgt_vocab.decode(pred_ids[1:])  # skip <sos>
             print(f"{romanized:15} → {prediction:15} (gold: {gold})")
 
 
@@ -222,9 +227,6 @@ def main():
     )
     parser.add_argument(
         "--wandb_project", type=str, required=True, help="W&B project name"
-    )
-    parser.add_argument(
-        "--wandb_entity",  type=str, required=True, help="W&B entity (team/user)"
     )
     parser.add_argument(
         "--wandb_run_tag", type=str, default="baseline",
@@ -266,14 +268,19 @@ def main():
         # ─── Register the sweep with W&B ───────────────────────────────
         sweep_id = wandb.sweep(
             sweep=sweep_yaml,
-            project=args.wandb_project,
-            entity=args.wandb_entity,
+            project=args.wandb_project
         )
         print(f"Registered sweep with id: {sweep_id}")
 
         # ─── Define the function the agent will call for each trial ────
         def sweep_train():
-            run_single_training(dict(wandb.config), args)
+            # start a new W&B run for this trial
+            run = wandb.init(
+                project=args.wandb_project
+            )
+            # now wandb.config is initialized, so we can read it
+            run_single_training(dict(run.config), args)
+            run.finish()
 
         # ─── Launch W&B agent in-process ───────────────────────────────
         print(f"Launching W&B agent for sweep {sweep_id}, count={args.sweep_count}")
@@ -287,7 +294,6 @@ def main():
         # ─── Single run for debugging ───────────────────────────────────
         with wandb.init(
             project=args.wandb_project,
-            entity=args.wandb_entity,
             config=sweep_yaml.get("parameters", {}),
         ) as run:
             run.config.update(

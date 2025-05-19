@@ -10,7 +10,7 @@ metric:
 parameters:
   # Number of training epochs
   epochs:
-    values: [5, 10, 15, 20]
+    values: [5, 10, 15]
 
   # Character embedding methods
   embedding_method:
@@ -18,11 +18,11 @@ parameters:
 
   # Embedding dimensions
   embedding_size:
-    values: [32, 64, 128, 256, 512]
+    values: [16, 32, 64, 128, 256]
 
   # RNN hidden state sizes
   hidden_size:
-    values: [32, 64, 128, 256, 512]
+    values: [16, 32, 64, 128, 256]
 
   # Number of RNN layers (encoder & decoder can differ)
   encoder_layers:
@@ -40,8 +40,9 @@ parameters:
 
   # Learning rate
   learning_rate:
-    min: 1e-4
-    max: 5e-3
+    distribution: log_uniform_values
+    min: 0.0001
+    max: 0.05
 
   # Batch size
   batch_size:
@@ -57,8 +58,8 @@ parameters:
 
   # Beam size for beam-search decoding in the qualitative check
   beam_size:
-    values: [1, 2, 3, 5]
+    values: [1]
 
 early_terminate:
   type: hyperband
-  max_iter: 20
+  max_iter: 15
