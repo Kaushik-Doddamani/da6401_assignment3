@@ -1,213 +1,314 @@
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Q2 – W&B sweep launcher for Hindi transliteration (Dakshina).
+"""
+Q2: W&B sweep driver for character-level Hindi transliteration
+────────────────────────────────────────────────────────────────
+Re-uses the full Seq2Seq implementation from solution_1.py (Q1).
+A YAML file under ./configs/ specifies the sweep search space.
 
-Major changes vs. the first draft
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-1. **Sweep configuration is stored in an external YAML file** (e.g. *hi_sweep.yaml*)
-   and loaded via the helper `get_configs`.
-2. CLI now accepts (and passes through to W&B) **`wandb_project`, `wandb_entity`,
-   `wandb_run_tag`, `gpu_id`, `sweep_count`, and custom TSV paths**.
-3. Every run gets a **unique, human‑readable name** summarising the active
-   hyper‑parameters, and the requested tag is attached to `wandb.run.tags`.
+Example usage
+~~~~~~~~~~~~~
+# 1) Create the sweep and directly launch the agent:
+python solution_2.py \
+    --mode sweep \
+    --sweep_config sweep_config.yaml \
+    --wandb_project transliteration \
+    --wandb_entity your_entity \
+    --wandb_run_tag baseline \
+    --gpu_ids 0 1 \
+    --train_tsv ./lexicons/hi.translit.sampled.train.tsv \
+    --dev_tsv   ./lexicons/hi.translit.sampled.dev.tsv \
+    --test_tsv  ./lexicons/hi.translit.sampled.test.tsv \
+    --sweep_count 30
 
-The rest of the logic (imports from *solution_1.py*, training loop, metrics) is
-unchanged for clarity.
+# 2) For a single debug run:
+python solution_2.py \
+    --mode single \
+    --wandb_project transliteration \
+    --wandb_entity your_entity \
+    --train_tsv ./lexicons/hi.translit.sampled.train.tsv \
+    --dev_tsv   ./lexicons/hi.translit.sampled.dev.tsv \
+    --test_tsv  ./lexicons/hi.translit.sampled.test.tsv
 """
 
 from __future__ import annotations
 
-# ───────────────────── Imports ─────────────────────
+# ───────────────────────── Imports ─────────────────────────
 import argparse
-import os
 import math
+import os
+import warnings
+import yaml
 from pathlib import Path
-from typing import Dict, Any
+from typing import Any, Dict, List
 
-import yaml  # for reading the sweep YAML
-import wandb
 import torch
-import torch.nn as nn
-from torch.utils.data import DataLoader, WeightedRandomSampler
+import wandb
 
+# Import Q1 implementation (updated solution_1.py)
 from solution_1 import (
-    CharVocabulary,
     DakshinaLexicon,
-    collate_batch,
+    CharVocabulary,
     Seq2SeqConfig,
     Seq2Seq,
+    collate_batch,
     train_epoch,
     eval_epoch,
 )
 
-# ───────────────────── Utility helpers ─────────────────────
-
+# ────────────── 1. YAML helper requested by the user ──────────────
 def get_configs(project_root: str | Path, config_filename: str) -> Dict[str, Any]:
-    """Read YAML file from ``<project_root>/config/<config_filename>``."""
-    path = Path(project_root) / "config" / config_filename
-    with path.open("r") as f:
-        cfg = yaml.safe_load(f)
-    return cfg
+    """
+    Load a YAML sweep configuration from ./configs/ relative to project_root.
+    """
+    cfg_path = Path(project_root) / "configs" / config_filename
+    with open(cfg_path, "r", encoding="utf-8") as handle:
+        config: Dict[str, Any] = yaml.safe_load(handle)
+    return config
 
-# Character‑level exact‑match accuracy --------------------------------------
 
-def character_accuracy(model: Seq2Seq, loader: DataLoader, device: str) -> float:
-    model.eval()
-    total, correct = 0, 0
-    with torch.no_grad():
-        for src, src_len, tgt in loader:
-            src, src_len, tgt = src.to(device), src_len.to(device), tgt.to(device)
-            preds = model.greedy_decode(src, src_len, max_len=tgt.size(1))
-            gold  = tgt[:, 1:preds.size(1) + 1]
-            mask  = gold != model.cfg.pad_index
-            match = (preds == gold) | (~mask)
-            correct += match.all(dim=1).sum().item()
-            total   += src.size(0)
-    return correct / total if total else 0.0
+# ────────────── 2. A single training run (used by sweep) ──────────────
+def run_single_training(sweep_config: Dict[str, Any], static_args: argparse.Namespace) -> None:
+    """
+    Train + evaluate once using the hyper-parameters in sweep_config and
+    the static file paths / tag supplied via CLI.
+    """
+    # ─── Honour multi-GPU pinning via CUDA_VISIBLE_DEVICES ─────────────────
+    os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(str(g) for g in static_args.gpu_ids)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
 
-# Run‑name helper -----------------------------------------------------------
+    # ─── Warn if encoder/decoder depths differ ─────────────────────────────
+    if sweep_config["encoder_layers"] != sweep_config["decoder_layers"]:
+        warnings.warn(
+            f"Encoder layers ({sweep_config['encoder_layers']}) != "
+            f"decoder layers ({sweep_config['decoder_layers']}), "
+            "hidden states will be aligned automatically.",
+            UserWarning
+        )
 
-def make_run_name(cfg: Dict[str, Any]) -> str:
-    """Readable unique run name built from key hyper‑parameters."""
-    parts = [
-        f"Emb:{cfg['embedding_method']}-{cfg['embedding_size']}",
-        f"Hid:{cfg['hidden_size']}",
-        f"Cell:{cfg['cell']}",
-        f"Depth:{cfg['encoder_layers']}enc/{cfg['decoder_layers']}dec",
-        f"DO:{cfg['dropout']}",
-        f"TF:{cfg['teacher_forcing']}",
-        f"LR:{cfg['lr']}",
-    ]
-    return " | ".join(parts)
-
-# ───────────────────── Single run function ─────────────────────
-
-def run_single_experiment(config: Dict[str, Any]):
-    """One W&B run executed by an agent or in "single" mode."""
-
-    run = wandb.init(
-        config=config,
-        project=config.get("wandb_project"),
-        entity=config.get("wandb_entity"),
-        reinit=True,
+    # ─── Data loading ────────────────────────────────────────────────
+    train_dataset = DakshinaLexicon(
+        static_args.train_tsv,
+        build_vocabs=True,
+        use_attestations=sweep_config.get("use_attestations", False),
     )
-    cfg = wandb.config  # convenience
+    src_vocab: CharVocabulary = train_dataset.src_vocab
+    tgt_vocab: CharVocabulary = train_dataset.tgt_vocab
 
-    # Assign human‑readable run name + tag
-    wandb.run.name = make_run_name(cfg)
-    if cfg.get("wandb_run_tag"):
-        wandb.run.tags = [cfg["wandb_run_tag"]]
+    dev_dataset  = DakshinaLexicon(static_args.dev_tsv,  src_vocab, tgt_vocab)
+    test_dataset = DakshinaLexicon(static_args.test_tsv, src_vocab, tgt_vocab)
 
-    device = cfg.device
+    collate_fn = lambda batch: collate_batch(batch, pad_id=src_vocab.stoi["<pad>"])
+    train_loader = torch.utils.data.DataLoader(
+        train_dataset,
+        batch_size=sweep_config["batch_size"],
+        shuffle=True,
+        collate_fn=collate_fn
+    )
+    dev_loader  = torch.utils.data.DataLoader(
+        dev_dataset,
+        batch_size=sweep_config["batch_size"],
+        shuffle=False,
+        collate_fn=collate_fn
+    )
+    test_loader = torch.utils.data.DataLoader(
+        test_dataset,
+        batch_size=sweep_config["batch_size"],
+        shuffle=False,
+        collate_fn=collate_fn
+    )
 
-    # ------------ Data -------------
-    train_ds = DakshinaLexicon(cfg.train_tsv, build_vocabs=True, use_attestations=cfg.use_attestations)
-    src_vocab, tgt_vocab = train_ds.src_vocab, train_ds.tgt_vocab
-    dev_ds  = DakshinaLexicon(cfg.dev_tsv,  src_vocab, tgt_vocab)
-    test_ds = DakshinaLexicon(cfg.test_tsv, src_vocab, tgt_vocab)
-
-    collate_fn = lambda b: collate_batch(b, pad_id=src_vocab.stoi["<pad>"])
-
-    if cfg.use_attestations:
-        sampler = WeightedRandomSampler(train_ds.example_counts, len(train_ds), replacement=True)
-        train_loader = DataLoader(train_ds, batch_size=cfg.batch_size, sampler=sampler, collate_fn=collate_fn)
-    else:
-        train_loader = DataLoader(train_ds, batch_size=cfg.batch_size, shuffle=True, collate_fn=collate_fn)
-
-    dev_loader  = DataLoader(dev_ds,  batch_size=cfg.batch_size, shuffle=False, collate_fn=collate_fn)
-    test_loader = DataLoader(test_ds, batch_size=cfg.batch_size, shuffle=False, collate_fn=collate_fn)
-
-    # ------------ Model -------------
-    extra_cfg = {}
-    if cfg.embedding_method == "svd_ppmi":
-        extra_cfg["svd_sources"] = train_ds.encoded_sources
+    # ─── Build the Seq2Seq model ─────────────────────────────────────────
+    extra_cfg: Dict[str, Any] = {}
+    if sweep_config["embedding_method"] == "svd_ppmi":
+        extra_cfg["svd_sources"] = train_dataset.encoded_sources
 
     model_cfg = Seq2SeqConfig(
         source_vocab_size=src_vocab.size,
         target_vocab_size=tgt_vocab.size,
-        embedding_dim=cfg.embedding_size,
-        hidden_dim=cfg.hidden_size,
-        encoder_layers=cfg.encoder_layers,
-        decoder_layers=cfg.decoder_layers,
-        cell_type=cfg.cell,
-        dropout=cfg.dropout,
+        embedding_dim=sweep_config["embedding_size"],
+        hidden_dim=sweep_config["hidden_size"],
+        encoder_layers=sweep_config["encoder_layers"],
+        decoder_layers=sweep_config["decoder_layers"],
+        cell_type=sweep_config["cell"],
+        dropout=sweep_config["dropout"],
         pad_index=src_vocab.stoi["<pad>"],
         sos_index=tgt_vocab.stoi["<sos>"],
         eos_index=tgt_vocab.stoi["<eos>"],
-        embedding_method=cfg.embedding_method,
-        **extra_cfg
+        embedding_method=sweep_config["embedding_method"],
+        **extra_cfg,
     )
-    model = Seq2Seq(model_cfg).to(device)
+    model = Seq2Seq(model_cfg)
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=cfg.lr)
-    loss_fn = nn.CrossEntropyLoss(ignore_index=model_cfg.pad_index)
+    # ─── Wrap in DataParallel if multiple GPUs specified ─────────────────
+    if device == "cuda" and len(static_args.gpu_ids) > 1:
+        model = torch.nn.DataParallel(model)
 
-    # ------------ Training -----------
-    for epoch in range(1, cfg.epochs + 1):
-        train_ce = train_epoch(model, train_loader, optimizer, loss_fn, device, cfg.teacher_forcing)
-        dev_ce   = eval_epoch(model, dev_loader, loss_fn, device)
-        wandb.log({"epoch": epoch, "train_ppl": math.exp(train_ce), "dev_ppl": math.exp(dev_ce)})
+    model = model.to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=sweep_config["learning_rate"])
+    loss_fn = torch.nn.CrossEntropyLoss(ignore_index=model_cfg.pad_index)
 
-    # ------------ Final metrics ------
-    test_ce  = eval_epoch(model, test_loader, loss_fn, device)
-    dev_acc  = character_accuracy(model, dev_loader, device)
-    test_acc = character_accuracy(model, test_loader, device)
+    # ─── Unique, human-readable run name ─────────────────────────────
+    run_name = (
+        f"emb:{sweep_config['embedding_method']}-{sweep_config['embedding_size']}|"
+        f"cell:{sweep_config['cell']}|hid:{sweep_config['hidden_size']}|"
+        f"enc:{sweep_config['encoder_layers']}|dec:{sweep_config['decoder_layers']}|"
+        f"dr:{sweep_config['dropout']}|lr:{sweep_config['learning_rate']}|"
+        f"bs:{sweep_config['batch_size']}|tf:{sweep_config['teacher_forcing']}|"
+        f"ep:{sweep_config['epochs']}|beam:{sweep_config.get('beam_size',1)}"
+    )
+    wandb.run.name = run_name
+    wandb.run.tags = [static_args.wandb_run_tag]
 
-    wandb.log({
-        "dev_ppl_final": math.exp(dev_ce),
-        "test_ppl_final": math.exp(test_ce),
-        "dev_acc": dev_acc,
-        "test_acc": test_acc,
-    })
+    # ─── Training loop ───────────────────────────────────────────────
+    for epoch in range(1, sweep_config["epochs"] + 1):
+        train_loss = train_epoch(
+            model, train_loader, optimizer, loss_fn, device, sweep_config["teacher_forcing"]
+        )
+        dev_loss = eval_epoch(model, dev_loader, loss_fn, device)
 
-    run.finish()
+        wandb.log({
+            "epoch": epoch,
+            "train_perplexity": math.exp(train_loss),
+            "dev_perplexity":   math.exp(dev_loss),
+        })
 
-# ───────────────────── CLI / sweep launcher ─────────────────────
+    # ─── Final test evaluation ──────────────────────────────────────
+    test_loss = eval_epoch(model, test_loader, loss_fn, device)
+    wandb.log({"test_perplexity": math.exp(test_loss)})
 
+    # ─── Qualitative beam-search samples ─────────────────────────────
+    beam = sweep_config.get("beam_size", 1)
+    print(f"\nSample dev-set translations (beam_size={beam}):")
+    model.eval()
+    with torch.no_grad():
+        for i in range(5):
+            src_ids, tgt_ids = dev_dataset[i]  # dev_dataset returns (src, tgt)
+            src_len = len(src_ids)
+            src_tensor = torch.tensor([src_ids], device=device)
+            len_tensor = torch.tensor([src_len], device=device)
+
+            # choose beam or greedy
+            if beam > 1:
+                pred_ids = model.beam_search_decode(
+                    src_tensor, len_tensor,
+                    beam_size=beam,
+                    max_len=30
+                )[0].tolist()
+            else:
+                pred_ids = model.greedy_decode(
+                    src_tensor, len_tensor,
+                    max_len=30
+                )[0].tolist()
+
+            romanized = src_vocab.decode(src_ids)
+            gold       = tgt_vocab.decode(tgt_ids[1:])  # skip <sos>
+            prediction = tgt_vocab.decode(pred_ids)
+            print(f"{romanized:15} → {prediction:15} (gold: {gold})")
+
+
+# ────────────── 3. Sweep & CLI plumbing ──────────────
 def main():
-    parser = argparse.ArgumentParser(description="Q2 sweep runner / launcher")
-    parser.add_argument("--mode", choices=["sweep", "single"], default="sweep")
-    parser.add_argument("--project_root", default=".")
-    parser.add_argument("--config_file", default="hi_sweep.yaml")
-    parser.add_argument("--wandb_project", default="transliteration")
-    parser.add_argument("--wandb_entity", default=None)
-    parser.add_argument("--wandb_run_tag", default="Q2")
-    parser.add_argument("--gpu_id", default="0", help="CUDA_VISIBLE_DEVICES value")
-    parser.add_argument("--sweep_count", type=int, default=None, help="Max runs in the sweep")
-    # Allow overriding TSV paths
-    parser.add_argument("--train_tsv", default=str(Path(DEFAULT_TRAIN)))
-    parser.add_argument("--dev_tsv",   default=str(Path(DEFAULT_DEV)))
-    parser.add_argument("--test_tsv",  default=str(Path(DEFAULT_TEST)))
+    parser = argparse.ArgumentParser(
+        description="Launch or run a W&B sweep for Q2."
+    )
+    parser.add_argument(
+        "--mode", choices=["sweep", "single"], required=True,
+        help="'sweep' to create & launch the sweep; 'single' for debug run"
+    )
+    parser.add_argument(
+        "--sweep_config", type=str, default="sweep_config.yaml",
+        help="YAML filename under ./configs/ defining the sweep space"
+    )
+    parser.add_argument(
+        "--wandb_project", type=str, required=True, help="W&B project name"
+    )
+    parser.add_argument(
+        "--wandb_entity",  type=str, required=True, help="W&B entity (team/user)"
+    )
+    parser.add_argument(
+        "--wandb_run_tag", type=str, default="baseline",
+        help="Static tag added to every W&B run"
+    )
+    parser.add_argument(
+        "--gpu_ids", type=int, nargs="+", default=[0],
+        help="CUDA device IDs to use (e.g. --gpu_ids 0 1 for two GPUs)"
+    )
+    parser.add_argument(
+        "--train_tsv", type=str, required=True, help="Path to train TSV"
+    )
+    parser.add_argument(
+        "--dev_tsv",   type=str, required=True, help="Path to dev TSV"
+    )
+    parser.add_argument(
+        "--test_tsv",  type=str, required=True, help="Path to test TSV"
+    )
+    parser.add_argument(
+        "--sweep_count", type=int, default=30,
+        help="Number of sweep runs to launch if mode==sweep"
+    )
     args = parser.parse_args()
 
-    # GPU selection ---------------------------------------------------------
-    os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu_id)
+    # Load sweep_config YAML
+    project_root = Path(__file__).resolve().parent
+    sweep_yaml   = get_configs(project_root, args.sweep_config)
 
-    # Load sweep YAML -------------------------------------------------------
-    sweep_cfg = get_configs(args.project_root, args.config_file)
+    if args.mode == "sweep":
+        # ─── Prepare sweep definition ─────────────────────────────────
+        sweep_yaml.setdefault("method", "bayes")
+        sweep_yaml["program"]    = Path(__file__).name
+        sweep_yaml.setdefault(
+            "metric", {"name": "dev_perplexity", "goal": "minimize"}
+        )
+        sweep_yaml.setdefault("parameters", {})
+        sweep_yaml["run_cap"]    = args.sweep_count
 
-    # Inject CLI overrides / fixed params
-    sweep_cfg.setdefault("parameters", {})
-    sweep_cfg["parameters"].update({
-        "train_tsv":       {"value": args.train_tsv},
-        "dev_tsv":         {"value": args.dev_tsv},
-        "test_tsv":        {"value": args.test_tsv},
-        "device":          {"value": "cuda" if torch.cuda.is_available() else "cpu"},
-        "wandb_project":   {"value": args.wandb_project},
-        "wandb_entity":    {"value": args.wandb_entity},
-        "wandb_run_tag":   {"value": args.wandb_run_tag},
-    })
+        # ─── Register the sweep with W&B ───────────────────────────────
+        sweep_id = wandb.sweep(
+            sweep=sweep_yaml,
+            project=args.wandb_project,
+            entity=args.wandb_entity,
+        )
+        print(f"Registered sweep with id: {sweep_id}")
 
-    if args.mode == "single":
-        # Build default config dict (pick first value from each search space)
-        default_cfg = {k: v.get("value", v.get("values")[0]) for k, v in sweep_cfg["parameters"].items()}
-        run_single_experiment(default_cfg)
+        # ─── Define the function the agent will call for each trial ────
+        def sweep_train():
+            run_single_training(dict(wandb.config), args)
+
+        # ─── Launch W&B agent in-process ───────────────────────────────
+        print(f"Launching W&B agent for sweep {sweep_id}, count={args.sweep_count}")
+        wandb.agent(
+            sweep_id,
+            function=sweep_train,
+            count=args.sweep_count
+        )
+
     else:
-        sweep_id = wandb.sweep(sweep_cfg, project=args.wandb_project, entity=args.wandb_entity)
-        print("Created sweep:", sweep_id)
-        cmd = f"wandb agent {args.wandb_project}/{sweep_id}"
-        if args.sweep_count:
-            cmd += f" --count {args.sweep_count}"
-        print("Run agents with:", cmd)
+        # ─── Single run for debugging ───────────────────────────────────
+        with wandb.init(
+            project=args.wandb_project,
+            entity=args.wandb_entity,
+            config=sweep_yaml.get("parameters", {}),
+        ) as run:
+            run.config.update(
+                {
+                    "epochs": 3,
+                    "batch_size": 64,
+                    "embedding_size": 128,
+                    "hidden_size": 256,
+                    "encoder_layers": 2,
+                    "decoder_layers": 2,
+                    "cell": "LSTM",
+                    "dropout": 0.1,
+                    "learning_rate": 1e-3,
+                    "teacher_forcing": 0.5,
+                    "embedding_method": "learned",
+                    "use_attestations": False,
+                    "beam_size": 1,
+                },
+                allow_val_change=True,
+            )
+            run_single_training(dict(run.config), args)
 
 
 if __name__ == "__main__":

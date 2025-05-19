@@ -343,6 +343,65 @@ _RNN_MAP: Dict[str, nn.Module] = {
     "GRU": nn.GRU,
 }
 
+# ─────────────────────────── Helper: Align Hidden State ──────────────────────────
+def _align_hidden_state(hidden_state, target_num_layers: int):
+    """
+    Adjust the encoder's final hidden state to match the decoder's expected
+    number of layers. Works for both LSTM (tuple of (h,c)) and GRU/RNN (single tensor).
+    
+    Strategies:
+    - If encoder_layers == decoder_layers: return hidden_state unchanged.
+    - If encoder_layers  > decoder_layers: take the **last** `target_num_layers` layers.
+    - If encoder_layers  < decoder_layers: **repeat** the final layer's state
+      so that the total number of layers equals `target_num_layers`.
+    """
+    def _repeat_last_layer(tensor, repeat_count: int):
+        # tensor shape: (enc_layers, batch_size, hidden_dim)
+        last_layer = tensor[-1:]                             # shape: (1, B, H)
+        repeated   = last_layer.expand(repeat_count, -1, -1) # shape: (repeat_count, B, H)
+        return torch.cat([tensor, repeated], dim=0)          # new shape: (enc_layers+repeat_count, B, H)
+
+    if isinstance(hidden_state, tuple):
+        h, c = hidden_state
+        enc_layers, batch_size, hid_dim = h.shape
+
+        if enc_layers == target_num_layers:
+            return h, c
+        
+        # Warn whenever we need to truncate or repeat
+        warnings.warn(
+            f"Encoder has {enc_layers} layers but decoder expects {target_num_layers}. "
+            f"{'Truncating' if enc_layers>target_num_layers else 'Repeating last layer'} hidden state.",
+            UserWarning
+        )
+
+        if enc_layers > target_num_layers:
+            # keep only the last `target_num_layers` layers
+            return h[-target_num_layers:], c[-target_num_layers:]
+        else:
+            # repeat the final layer's state to pad up to target_num_layers
+            to_repeat = target_num_layers - enc_layers
+            return _repeat_last_layer(h, to_repeat), _repeat_last_layer(c, to_repeat)
+    else:
+        h = hidden_state
+        enc_layers, batch_size, hid_dim = h.shape
+
+        if enc_layers == target_num_layers:
+            return h
+        
+        # Same warning for single‐tensor hidden states
+        warnings.warn(
+            f"Encoder has {enc_layers} layers but decoder expects {target_num_layers}. "
+            f"{'Truncating' if enc_layers>target_num_layers else 'Repeating last layer'} hidden state.",
+            UserWarning
+        )
+
+        if enc_layers > target_num_layers:
+            return h[-target_num_layers:]
+        else:
+            to_repeat = target_num_layers - enc_layers
+            return _repeat_last_layer(h, to_repeat)
+
 
 # ───────────────────────── 4. Encoder ─────────────────────────
 class Encoder(nn.Module):
@@ -405,7 +464,7 @@ class Encoder(nn.Module):
             embedded, src_lengths.cpu(), batch_first=True, enforce_sorted=False
         )
         _, hidden_state = self.rnn(packed)
-        return hidden_state
+        return hidden_state  # LSTM → (h,c), GRU/RNN → h
 
 
 # ───────────────────────── 5. Decoder ─────────────────────────
@@ -450,40 +509,45 @@ class Decoder(nn.Module):
 
 # ───────────────────────── 6. Seq2Seq wrapper ─────────────────────────
 class Seq2Seq(nn.Module):
-    """Combines Encoder and Decoder for training and inference."""
+    """Flexible encoder-decoder wrapper combining Encoder and Decoder."""
+
     def __init__(self, cfg: Seq2SeqConfig):
         super().__init__()
-        self.cfg = cfg
+        self.cfg     = cfg
         self.encoder = Encoder(cfg)
         self.decoder = Decoder(cfg)
 
+    # ─────────────────────────────────────────────────────────────────────
+    # Training-time forward (teacher forcing)
+    # ─────────────────────────────────────────────────────────────────────
     def forward(
         self,
         src: torch.LongTensor,
         src_lengths: torch.LongTensor,
-        tgt: torch.LongTensor,
-        *,
-        teacher_forcing_ratio: float = 0.5
+        tgt: torch.LongTensor, *,
+        teacher_forcing_ratio: float = 0.5,
     ) -> torch.Tensor:
         """
-        Training forward with teacher forcing:
-          src → encode → decoder autoregressively with optional teacher forcing.
-        Returns logits for each target timestep.
+        Compute logits for each timestep in the target sequence using teacher forcing.
+        Returns logits_all of shape (B, T_tgt, vocab_size).
         """
-        B, T_tgt = tgt.size()
-        logits_all = torch.zeros(B, T_tgt, self.cfg.target_vocab_size, device=tgt.device)
+        batch_size, tgt_len = tgt.size()
+        logits_all = torch.zeros(batch_size, tgt_len, self.cfg.target_vocab_size, device=tgt.device)
 
-        # 1) Encode source sequence
+        # 1) Encode source
         hidden_state = self.encoder(src, src_lengths)
 
-        # 2) First decoder input is <sos>
+        # 2) Align hidden_state to decoder depth
+        hidden_state = _align_hidden_state(hidden_state, self.cfg.decoder_layers)
+
+        # 3) First decoder input is <sos>
         decoder_input = tgt[:, 0].unsqueeze(1)  # (B,1)
 
-        # 3) Unroll for each timestep
-        for t in range(1, T_tgt):
+        # 4) Unroll for each timestep
+        for t in range(1, tgt_len):
             step_logits, hidden_state = self.decoder(decoder_input, hidden_state)
             logits_all[:, t] = step_logits.squeeze(1)
-            # choose next input: teacher or own prediction
+            # decide next input
             if torch.rand(1).item() < teacher_forcing_ratio:
                 decoder_input = tgt[:, t].unsqueeze(1)
             else:
@@ -491,21 +555,29 @@ class Seq2Seq(nn.Module):
 
         return logits_all
 
+    # ─────────────────────────────────────────────────────────────────────
+    # Greedy decoding
+    # ─────────────────────────────────────────────────────────────────────
     def greedy_decode(
         self,
         src: torch.LongTensor,
-        src_lengths: torch.LongTensor,
-        *,
-        max_len: int = 50
+        src_lengths: torch.LongTensor, *,
+        max_len: int = 50,
     ) -> torch.LongTensor:
         """
-        Inference forward (greedy):
-          src → encode → decoder always feeds its own predictions.
-        Returns generated token ids (B, ≤max_len).
+        Greedy decoding for inference: always take argmax.
+        Returns tensor of shape (B, <=max_len).
         """
         B = src.size(0)
         hidden_state = self.encoder(src, src_lengths)
-        decoder_input = torch.full((B, 1), self.cfg.sos_index, dtype=torch.long, device=src.device)
+        hidden_state = _align_hidden_state(hidden_state, self.cfg.decoder_layers)
+
+        decoder_input = torch.full(
+            (B, 1),
+            self.cfg.sos_index,
+            dtype=torch.long,
+            device=src.device
+        )
         generated_ids: List[torch.LongTensor] = []
 
         for _ in range(max_len):
@@ -515,6 +587,57 @@ class Seq2Seq(nn.Module):
             decoder_input = next_ids
 
         return torch.cat(generated_ids, dim=1)  # (B, seq_len)
+
+    # ─────────────────────────────────────────────────────────────────────
+    # Beam-search decoding
+    # ─────────────────────────────────────────────────────────────────────
+    def beam_search_decode(
+        self,
+        src: torch.LongTensor,
+        src_lengths: torch.LongTensor, *,
+        beam_size: int = 5,
+        max_len: int = 50,
+    ) -> torch.LongTensor:
+        """
+        Beam search decoding (only batch_size=1 supported).
+        Returns the best sequence of token ids as a tensor of shape (1, <=max_len).
+        """
+        B = src.size(0)
+        assert B == 1, "beam_search_decode currently only supports batch_size=1"
+
+        # 1) Encode and align
+        hidden_state = self.encoder(src, src_lengths)
+        hidden_state = _align_hidden_state(hidden_state, self.cfg.decoder_layers)
+
+        # Initialize beams: each is (sequence_list, cumulative_log_prob, hidden_state)
+        beams = [([self.cfg.sos_index], 0.0, hidden_state)]
+
+        for _ in range(max_len):
+            candidates: List[Tuple[List[int], float, Any]] = []
+            for seq, score, h_state in beams:
+                last_token = seq[-1]
+                # If already ended with <eos>, carry forward unchanged
+                if last_token == self.cfg.eos_index:
+                    candidates.append((seq, score, h_state))
+                    continue
+
+                # Run one decoder step
+                inp = torch.tensor([[last_token]], device=src.device)
+                logits, new_hidden = self.decoder(inp, h_state)  # (1,1,V)
+                log_probs = torch.log_softmax(logits.squeeze(1), dim=-1)  # (V,)
+
+                # Expand top-k continuations
+                topk_vals, topk_idx = log_probs.topk(beam_size)
+                for log_p, idx in zip(topk_vals.tolist(), topk_idx.tolist()):
+                    candidates.append((seq + [idx], score + log_p, new_hidden))
+
+            # Prune back to top beam_size
+            beams = sorted(candidates, key=lambda x: x[1], reverse=True)[:beam_size]
+
+        # Choose best final beam
+        best_seq, best_score, _ = max(beams, key=lambda x: x[1])
+        return torch.tensor(best_seq, dtype=torch.long, device=src.device).unsqueeze(0)
+
 
 
 # ───────────────────────── 7. Training & evaluation ─────────────────────────
@@ -675,13 +798,6 @@ def parse_args():
 # ─────────────────────────── 9. Main driver ───────────────────────────
 def main():
     args = parse_args()
-
-    # Sanity: encoder/decoder depth match
-    if args.encoder_layers != args.decoder_layers:
-        raise ValueError(
-            f"Encoder and decoder must have same layers "
-            f"(got enc={args.encoder_layers}, dec={args.decoder_layers})"
-        )
 
     # ─── Prepare datasets ───────────────────────────────────────────────
     # Train set: build vocabularies and optionally keep counts

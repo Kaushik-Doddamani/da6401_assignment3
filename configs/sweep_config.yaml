@@ -24,7 +24,7 @@ parameters:
   hidden_size:
     values: [32, 64, 128, 256, 512]
 
-  # Number of RNN layers (must match in encoder & decoder)
+  # Number of RNN layers (encoder & decoder can differ)
   encoder_layers:
     values: [1, 2, 3]
   decoder_layers:
@@ -55,7 +55,10 @@ parameters:
   use_attestations:
     values: [true, false]
 
+  # Beam size for beam-search decoding in the qualitative check
+  beam_size:
+    values: [1, 2, 3, 5]
+
 early_terminate:
   type: hyperband
   max_iter: 20
-# ──────────────────────────────────────────────────────────────
