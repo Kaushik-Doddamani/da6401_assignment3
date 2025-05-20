@@ -41,6 +41,16 @@ import matplotlib.font_manager as fm
 import wandb
 from wcwidth import wcswidth
 
+# Re-use Q1 code unchanged:
+from solution_1 import (
+    DakshinaLexicon,
+    collate_batch,
+    Seq2SeqConfig,
+    Seq2Seq,
+    train_epoch,
+    eval_epoch,
+)
+
 # ────────────────────────────────
 # Download & register Devanagari font
 # ────────────────────────────────
@@ -56,16 +66,6 @@ else:
     plt.rcParams["font.family"] = "Hind"
     plt.style.use("seaborn-v0_8-pastel")
     print("Font loaded and matplotlib configured.")
-
-# Re-use Q1 code unchanged:
-from solution_1 import (
-    DakshinaLexicon,
-    collate_batch,
-    Seq2SeqConfig,
-    Seq2Seq,
-    train_epoch,
-    eval_epoch,
-)
 
 # ────────────────────────────────
 # GLOBAL: best hyperparameters
