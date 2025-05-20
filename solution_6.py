@@ -48,20 +48,20 @@ from solution_5_model import Seq2SeqAttentionConfig, Seq2SeqAttention, _align_hi
 best = {
     "batch_size":        128,
     "beam_size":         5,
-    "cell_type":         "LSTM",
+    "cell_type":         "GRU",
     "decoder_layers":    3,
-    "dropout":           0.3,
+    "dropout":           0.2,
     "embedding_method":  "svd_ppmi",
-    "embedding_size":    512,
+    "embedding_size":    64,
     "encoder_layers":    1,
     "hidden_size":       512,
-    "learning_rate":     0.0007163826131644132,
-    "teacher_forcing":   0.3,
+    "learning_rate":     0.0006899910999897612,
+    "teacher_forcing":   0.5,
     "use_attestations":  True,
-    # early stopping patience
-    "patience":         3,
-    # number of training epochs to try
-    "epochs":          20,
+    # # early stopping patience
+    # "patience":         3,
+    # # number of training epochs to try
+    # "epochs":          20,
 }
 # ──────────────────────────────────────────────────────────────────────────────
 
