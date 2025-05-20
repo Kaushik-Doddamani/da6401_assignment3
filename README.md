@@ -69,6 +69,43 @@ Place the Dakshina Hindi lexicon files under `lexicons/`:
 
 Format: `native_word \t romanized_word \t count`.
 
+About the dataset:
+The Dakshina dataset is a collection of text in both Latin and native scripts
+for 12 South Asian languages. For each language, the dataset includes a large
+collection of native script Wikipedia text, a romanization lexicon which
+consists of words in the native script with attested romanizations, and some
+full sentence parallel data in both a native script of the language and the
+basic Latin alphabet.
+
+Dataset URL:
+[https://github.com/google-research-datasets/dakshina](https://github.com/google-research-datasets/dakshina)
+
+A PDF link for the paper can be found at
+[https://www.aclweb.org/anthology/2020.lrec-1.294](https://www.aclweb.org/anthology/2020.lrec-1.294).
+
+```
+@inproceedings{roark-etal-2020-processing,
+    title = "Processing {South} {Asian} Languages Written in the {Latin} Script:
+    the {Dakshina} Dataset",
+    author = "Roark, Brian and
+      Wolf-Sonkin, Lawrence and
+      Kirov, Christo and
+      Mielke, Sabrina J. and
+      Johny, Cibu and
+      Demir{\c{s}}ahin, I{\c{s}}in and
+      Hall, Keith",
+    booktitle = "Proceedings of The 12th Language Resources and Evaluation Conference (LREC)",
+    year = "2020",
+    url = "https://www.aclweb.org/anthology/2020.lrec-1.294",
+    pages = "2413--2423"
+}
+```
+## Data links ##
+
+File | Download | Version | Date | Notes
+---- | :------: | :-------: | :--------: | :------
+**dakshina_dataset_v1.0.tar** | [link](https://storage.googleapis.com/gresearch/dakshina/dakshina_dataset_v1.0.tar) | 1.0 | 05/27/2020 | Initial data release
+
 ---
 
 ## 🚀 Usage
