@@ -597,55 +597,78 @@ class Seq2Seq(nn.Module):
         src_lengths: torch.LongTensor,
         *,
         beam_size: int = 5,
-        max_len: int = 50,
+        max_len:   int = 50,
     ) -> torch.LongTensor:
         """
-        Beam search decoding (only batch_size=1 supported).
-        Returns the best sequence of token ids as a tensor of shape (1, <=max_len).
+        Beam‐search decoding (batch_size=1 only).
+        Returns the best generated token sequence *without* the leading <sos>,
+        as a tensor of shape (1, ≤ max_len).
         """
+        # 0) only support batch_size=1 for now
         B = src.size(0)
-        assert B == 1, "beam_search_decode only supports batch_size=1 for now"
+        assert B == 1, "batch_size must be 1 for beam_search_decode"
 
-        # 1) Encode & align hidden state
-        hidden_state = self.encoder(src, src_lengths)
-        hidden_state = _align_hidden_state(hidden_state, self.cfg.decoder_layers)
+        # 1) encode + align hidden state
+        enc_hidden = self.encoder(src, src_lengths)
+        dec_hidden = _align_hidden_state(enc_hidden, self.cfg.decoder_layers)
 
-        # 2) Initialize beams: list of (sequence_ids, cumulative_log_prob, hidden_state)
-        beams: List[Tuple[List[int], float, Any]] = [
-            ([self.cfg.sos_index], 0.0, hidden_state)
-        ]
+        # 2) initialize single beam: (tokens, score, hidden_state)
+        beams = [([self.cfg.sos_index], 0.0, dec_hidden)]
+        completed = []
 
         for _ in range(max_len):
-            all_candidates: List[Tuple[List[int], float, Any]] = []
-            # Expand each current beam
-            for seq_ids, cum_logprob, h_state in beams:
-                last_token = seq_ids[-1]
-                # if EOS already, just carry it forward
-                if last_token == self.cfg.eos_index:
-                    all_candidates.append((seq_ids, cum_logprob, h_state))
+            all_candidates = []
+            # for each live beam, extend by up to beam_size next tokens
+            for seq, score, hidden in beams:
+                last = seq[-1]
+                # if already ended, carry forward to completed and don’t extend
+                if last == self.cfg.eos_index:
+                    completed.append((seq, score))
                     continue
 
-                # run one step
-                inp = torch.tensor([[last_token]], device=src.device)
-                logits, new_h_state = self.decoder(inp, h_state)       # (1,1,V)
-                log_probs = torch.log_softmax(logits.squeeze(1), dim=-1)  # (1,V) → (V,)
+                # run one decoder step
+                inp = torch.tensor([[last]], device=src.device)           # (1,1)
+                logits, new_hidden = self.decoder(inp, hidden)            # (1,1,V), hidden’
+                log_probs = torch.log_softmax(logits[0,0], dim=-1)        # (V,)
 
-                # pick top-k continuations
-                # collapse the batch dimension so we get 1D lists
-                vals, idxs = log_probs.topk(beam_size, dim=-1)      # shape: (1, beam_size)
-                vals = vals[0].detach().cpu().tolist()               # → [v₁, v₂, …]
-                idxs = idxs[0].detach().cpu().tolist()               # → [i₁, i₂, …]
-                for log_p, idx in zip(vals, idxs):
-                    new_seq   = seq_ids + [idx]
-                    new_score = cum_logprob + log_p                 # log_p is now a float
-                    all_candidates.append((new_seq, new_score, new_h_state))
+                # grab top‐k continuations
+                topk_logp, topk_idx = log_probs.topk(beam_size)           # (beam_size,)
+                for logp, idx in zip(topk_logp.tolist(), topk_idx.tolist()):
+                    # each candidate gets its own detached copy of new_hidden
+                    if isinstance(new_hidden, tuple):
+                        h, c = new_hidden
+                        h = h.detach().clone()
+                        c = c.detach().clone()
+                        nh = (h, c)
+                    else:
+                        nh = new_hidden.detach().clone()
 
-            # keep best beam_size beams
+                    all_candidates.append((seq + [idx], score + logp, nh))
+
+            # if no new candidates (all beams ended), stop
+            if not all_candidates:
+                break
+
+            # keep only the top beam_size beams by score
             beams = sorted(all_candidates, key=lambda x: x[1], reverse=True)[:beam_size]
 
-        # pick the single best final sequence
-        best_seq, best_score, _ = max(beams, key=lambda x: x[1])
-        # convert to tensor
+            # if *every* beam has ended with <eos>, we can stop early
+            if all(seq[-1] == self.cfg.eos_index for seq, _, _ in beams):
+                completed.extend((seq, sc) for seq, sc, _ in beams)
+                break
+
+        # if nothing ever completed, treat current beams as completed
+        if not completed:
+            completed = [(seq, sc) for seq, sc, _ in beams]
+
+        # pick the highest‐scoring finished sequence
+        best_seq, best_score = max(completed, key=lambda x: x[1])
+
+        # strip the leading <sos> if present
+        if best_seq and best_seq[0] == self.cfg.sos_index:
+            best_seq = best_seq[1:]
+
+        # convert to tensor and return (1 x L)
         return torch.tensor(best_seq, dtype=torch.long, device=src.device).unsqueeze(0)
 
 

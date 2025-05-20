@@ -18,11 +18,11 @@ parameters:
 
   # Embedding dimensions
   embedding_size:
-    values: [16, 32, 64, 128, 256]
+    values: [16, 32, 64, 128, 256, 512]
 
   # RNN hidden state sizes
   hidden_size:
-    values: [16, 32, 64, 128, 256]
+    values: [16, 32, 64, 128, 256, 512]
 
   # Number of RNN layers (encoder & decoder can differ)
   encoder_layers:

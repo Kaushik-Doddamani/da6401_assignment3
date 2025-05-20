@@ -55,7 +55,8 @@ from solution_1 import (
     eval_epoch,
 )
 
-# ────────────── 1. YAML helper requested by the user ──────────────
+# ────────────── Helpers ──────────────
+
 def get_configs(project_root: str | Path, config_filename: str) -> Dict[str, Any]:
     """
     Load a YAML sweep configuration from ./configs/ relative to project_root.
@@ -64,6 +65,50 @@ def get_configs(project_root: str | Path, config_filename: str) -> Dict[str, Any
     with open(cfg_path, "r", encoding="utf-8") as handle:
         config: Dict[str, Any] = yaml.safe_load(handle)
     return config
+
+
+def compute_sequence_accuracy(
+    model: Seq2Seq,
+    dataset: DakshinaLexicon,
+    device: str,
+    beam_size: int = 1
+) -> float:
+    """
+    Compute exact-match accuracy over a dataset using greedy or beam decoding.
+
+    Args:
+        model      – trained Seq2Seq module (unwrapped if DataParallel)
+        dataset    – DakshinaLexicon providing (src_ids, tgt_ids)
+        device     – 'cpu' or 'cuda'
+        beam_size  – if >1, use beam_search_decode; else greedy_decode
+    Returns:
+        accuracy   – fraction of examples where pred == gold
+    """
+    model.eval()
+    correct, total = 0, 0
+    with torch.no_grad():
+        for src_ids, tgt_ids in dataset:
+            # prepare input tensors
+            src_tensor = torch.tensor([src_ids], device=device)
+            src_len_tensor = torch.tensor([len(src_ids)], device=device)
+
+
+            pred_ids = model.beam_search_decode(
+                src_tensor, src_len_tensor,
+                beam_size=beam_size, max_len=len(tgt_ids)
+            )[0]
+
+            # convert to strings (skip leading <sos>)
+            gold_str = dataset.tgt_vocab.decode(tgt_ids[1:])
+
+            # convert to strings, *dropping* the leading <sos> token
+            pred_ids_list = pred_ids.tolist()
+            if pred_ids_list and pred_ids_list[0] == dataset.tgt_vocab.stoi["<sos>"]:
+                pred_ids_list = pred_ids_list[1:]
+            pred_str = dataset.tgt_vocab.decode(pred_ids_list)
+            correct += int(pred_str == gold_str)
+            total += 1
+    return correct / total if total > 0 else 0.0
 
 
 # ────────────── 2. A single training run (used by sweep) ──────────────
@@ -176,20 +221,23 @@ def run_single_training(sweep_config: Dict[str, Any], static_args: argparse.Name
             "dev_perplexity": math.exp(dev_loss),
         })
 
-    # ─── Final test evaluation ──────────────────────────────────────
-    test_loss = eval_epoch(model, test_loader, loss_fn, device)
+
+    # ─── Compute and log sequence-level accuracies ─────────────────────
+    # Unwrap from DataParallel if needed for decoding
+    inference_model = model.module if hasattr(model, "module") else model
+    beam = sweep_config.get("beam_size", 1)
+
+    # training_accuracy = compute_sequence_accuracy(inference_model, train_dataset, device, beam_size=1)
+    dev_accuracy      = compute_sequence_accuracy(inference_model, dev_dataset,   device, beam_size=beam)
+    # test_accuracy     = compute_sequence_accuracy(inference_model, test_dataset,  device, beam_size=beam)
+
     wandb.log({
-        "test_loss": test_loss,
-        "test_perplexity": math.exp(test_loss),
+        "dev_accuracy":   dev_accuracy,
     })
 
     # ─── Qualitative beam-search samples ─────────────────────────────
-    beam = sweep_config.get("beam_size", 1)
     print(f"\nSample dev-set translations (beam_size={beam}):")
     model.eval()
-
-    # If DataParallel wrapped us, unwrap for decode methods:
-    inference_model = model.module if hasattr(model, "module") else model
 
     with torch.no_grad():
         for i in range(5):

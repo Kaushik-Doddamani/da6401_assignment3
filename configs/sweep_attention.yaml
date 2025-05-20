@@ -1,0 +1,62 @@
+# configs/sweep_attention.yaml
+method: bayes            # Bayesian optimization
+metric:
+  name: dev_perplexity
+  goal: minimize
+
+parameters:
+  # Number of training epochs
+  epochs:
+    values: [5, 10, 15]
+
+  # Character embedding methods
+  embedding_method:
+    values: ["learned", "onehot", "char_cnn", "svd_ppmi"]
+
+  # Embedding dimensions (including 512)
+  embedding_size:
+    values: [16, 32, 64, 128, 256, 512]
+
+  # RNN hidden state sizes (including 512)
+  hidden_size:
+    values: [16, 32, 64, 128, 256, 512]
+
+  # Number of RNN layers (encoder & decoder can differ)
+  encoder_layers:
+    values: [1, 2, 3]
+  decoder_layers:
+    values: [1, 2, 3]
+
+  # RNN cell types
+  cell:
+    values: ["RNN", "GRU", "LSTM"]
+
+  # Dropout for multi-layer RNNs
+  dropout:
+    values: [0.1, 0.2, 0.3]
+
+  # Learning rate
+  learning_rate:
+    distribution: log_uniform_values
+    min: 0.0001
+    max: 0.05
+
+  # Batch size
+  batch_size:
+    values: [32, 64, 128]
+
+  # Teacher forcing ratio
+  teacher_forcing:
+    values: [0.3, 0.5, 0.7, 1.0]
+
+  # Whether to sample by attestations
+  use_attestations:
+    values: [true, false]
+
+  # We leave beam_size fixed to 1 for now
+  beam_size:
+    values: [1]
+
+early_terminate:
+  type: hyperband
+  max_iter: 15
