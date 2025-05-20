@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Q6: Interactive “Connectivity” visualization for your attention‐augmented Seq2Seq model
+Q6: Interactive “Connectivity” visualization for your attention-augmented Seq2Seq model
 
 This script lets you:
   1. Load your trained Seq2SeqAttention checkpoint.
   2. Sample N examples from the test set.
   3. For each example, run a greedy decode while recording the attention weights
      at each decoder timestep.
-  4. Launch a small Flask web app (or save standalone HTML) that displays, for each
-     example:
-       - The source characters along the x‐axis.
-       - The predicted output characters along the y‐axis.
+  4. Save a standalone HTML that displays, for each example:
+       - The source characters along the x-axis.
+       - The predicted output characters along the y-axis.
        - A Plotly heatmap of attention weights.
      You can hover over any cell to see the exact weight—and thus see “connectivity.”
+  5. (New!) Log the final HTML to WandB so you can browse it in your project.
 
 Usage (as a script):
 
@@ -22,10 +22,10 @@ Usage (as a script):
       --train_tsv   ./lexicons/hi.translit.sampled.train.tsv \
       --test_tsv    ./lexicons/hi.translit.sampled.test.tsv \
       --n_examples  5 \
-      --output_html connectivity.html
-
-You can then simply open `connectivity.html` in your browser, or serve it via
-`python -m http.server` from that directory and browse to `localhost:8000/connectivity.html`.
+      --output_html connectivity.html \
+      --wandb_project transliteration \
+      --wandb_run_name q6_connectivity \
+      --wandb_run_tag  q6
 """
 
 from __future__ import annotations
@@ -37,13 +37,14 @@ from pathlib import Path
 import torch
 import pandas as pd
 import plotly.graph_objects as go
+import wandb
 
 # your seq2seq imports:
 from solution_1 import DakshinaLexicon
 from solution_5_model import Seq2SeqAttentionConfig, Seq2SeqAttention, _align_hidden_state
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Hyper‐parameters for your best attention model (must match how you trained it)
+# Hyper-parameters for your best attention model (must match how you trained it)
 best = {
     "batch_size":        128,
     "beam_size":         5,
@@ -66,7 +67,7 @@ best = {
 
 def parse_args():
     p = argparse.ArgumentParser(
-        description="Q6: Visualize character‐level attention connectivity interactively"
+        description="Q6: Visualize character-level attention connectivity interactively"
     )
     p.add_argument(
         "--checkpoint", type=str, required=True,
@@ -87,6 +88,19 @@ def parse_args():
     p.add_argument(
         "--output_html", type=str, default="connectivity.html",
         help="Path to save the standalone HTML with Plotly plots"
+    )
+    # WandB logging args
+    p.add_argument(
+        "--wandb_project", type=str, default=None,
+        help="(optional) WandB project name to log this HTML"
+    )
+    p.add_argument(
+        "--wandb_run_name", type=str, default=None,
+        help="(optional) WandB run name"
+    )
+    p.add_argument(
+        "--wandb_run_tag", type=str, default=None,
+        help="(optional) WandB run tag"
     )
     return p.parse_args()
 
@@ -143,7 +157,7 @@ def record_attention(
     max_len: int = 50
 ) -> tuple[list[str], list[str], list[list[float]]]:
     """
-    Greedy‐decode `src_ids` with the model, capturing attention weights at each step.
+    Greedy-decode `src_ids` with the model, capturing attention weights at each step.
     Returns:
       (source_chars, predicted_chars, attention_matrix)
     where
@@ -253,9 +267,18 @@ def make_plotly_figure(
     return fig
 
 
-
 if __name__ == "__main__":
     args = parse_args()
+
+    # ─── WandB initialization (optional) ─────────────────────────
+    use_wandb = args.wandb_project is not None
+    if use_wandb:
+        wandb.init(
+            project=args.wandb_project,
+            name=args.wandb_run_name,
+            tags=[args.wandb_run_tag] if args.wandb_run_tag else None
+        )
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # 1) Load model and vocab built from the true training split
@@ -304,3 +327,11 @@ if __name__ == "__main__":
     out_path = Path(args.output_html)
     out_path.write_text(full_html, encoding="utf-8")
     print(f"Wrote interactive connectivity HTML to {out_path}")
+
+    # 7) Log to WandB (if requested)
+    if use_wandb:
+        # wandb.Html will render your HTML in the WandB UI
+        wandb.log({
+            "connectivity": wandb.Html(str(out_path))
+        })
+        wandb.finish()
