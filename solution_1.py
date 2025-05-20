@@ -12,7 +12,7 @@ This script:
 
 Usage example:
 
-    python train_dakshina_seq2seq.py \
+    python solution_1.py \
       --train_tsv ./lexicons/hi.translit.sampled.train.tsv \
       --dev_tsv   ./lexicons/hi.translit.sampled.dev.tsv   \
       --test_tsv  ./lexicons/hi.translit.sampled.test.tsv  \

@@ -36,17 +36,17 @@ from solution_5_model import Seq2SeqAttentionConfig, Seq2SeqAttention
 # ──────────────────────────── best hyperparameters ────────────────────────────
 best = {
     "batch_size":        128,
-    "cell_type":       "LSTM",
+    "cell_type":       "GRU",
     "encoder_layers":     1,
-    "decoder_layers":     3,
+    "decoder_layers":     2,
     "hidden_size":      512,
     "embedding_method":"svd_ppmi",
-    "embedding_size":   512,
-    "dropout":          0.3,
-    "learning_rate":   0.0007163826131644132,
-    "teacher_forcing":  0.3,
+    "embedding_size":   64,
+    "dropout":          0.2,
+    "learning_rate":   0.0006899910999897612,
+    "teacher_forcing":  0.5,
     "use_attestations": True,
-    "epochs":           20,
+    "epochs":           10,
 }
 # ──────────────────────────────────────────────────────────────────────────────
 

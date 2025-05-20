@@ -71,18 +71,18 @@ else:
 # GLOBAL: best hyperparameters
 # ────────────────────────────────
 best = {
-    "batch_size":       128,
+    "batch_size":       32,
     "beam_size":        5,
     "cell":             "LSTM",
-    "decoder_layers":   3,
-    "dropout":          0.1,
+    "decoder_layers":   2,
+    "dropout":          0.2,
     "embedding_method": "learned",
     "embedding_size":   64,
-    "encoder_layers":   3,
-    "epochs":           5,
-    "hidden_size":      512,
-    "learning_rate":    0.0017737018583641314,
-    "teacher_forcing":  0.3,
+    "encoder_layers":   2,
+    "epochs":           25,
+    "hidden_size":      256,
+    "learning_rate":    0.0006772525707570603,
+    "teacher_forcing":  0.7,
     "use_attestations": False,
     # early stopping patience
     "patience":         3,

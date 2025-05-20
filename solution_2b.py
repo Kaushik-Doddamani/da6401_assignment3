@@ -11,9 +11,9 @@ This script:
 
 Usage example:
     python solution_2b.py \
-        --train_tsv path/to/hi.translit.sampled.train.tsv \
-        --dev_tsv   path/to/hi.translit.sampled.dev.tsv \
-        --test_tsv  path/to/hi.translit.sampled.test.tsv \
+        --train_tsv ./lexicons/hi.translit.sampled.train.tsv \
+        --dev_tsv   ./lexicons/hi.translit.sampled.dev.tsv \
+        --test_tsv  ./lexicons/hi.translit.sampled.test.tsv \
         --gpu_ids   3
 
 Arguments:
@@ -48,18 +48,18 @@ from solution_1 import (
 
 # ─── best hyper-parameters found ─────────────────────────────
 best = {
-    "batch_size":        64,
+    "batch_size":        32,
     "cell":             "LSTM",
-    "decoder_layers":     1,
-    "dropout":          0.3,
-    "embedding_method":"onehot",
-    "embedding_size":    16,
-    "encoder_layers":     1,
-    "epochs":            15,
-    "hidden_size":       64,
-    "learning_rate":   1.1367425385944718e-3,
+    "decoder_layers":     2,
+    "dropout":          0.2,
+    "embedding_method":"learned",
+    "embedding_size":    64,
+    "encoder_layers":     2,
+    "epochs":            10,
+    "hidden_size":       256,
+    "learning_rate":   0.0006772525707570603,
     "teacher_forcing":   0.7,
-    "use_attestations":  True,
+    "use_attestations":  False,
 }
 
 def parse_args():

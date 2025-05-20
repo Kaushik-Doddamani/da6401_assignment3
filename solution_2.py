@@ -12,13 +12,13 @@ Example usage
 python solution_2.py \
     --mode sweep \
     --sweep_config sweep_config.yaml \
-    --wandb_project transliteration \
-    --wandb_run_tag baseline \
+    --wandb_project DA6401_Intro_to_DeepLearning_Assignment_3 \
+    --wandb_run_tag solution_2 \
     --gpu_ids 0 1 \
     --train_tsv ./lexicons/hi.translit.sampled.train.tsv \
     --dev_tsv   ./lexicons/hi.translit.sampled.dev.tsv \
     --test_tsv  ./lexicons/hi.translit.sampled.test.tsv \
-    --sweep_count 30
+    --sweep_count 50
 
 # 2) For a single debug run:
 python solution_2.py \
