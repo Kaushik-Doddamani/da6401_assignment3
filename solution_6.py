@@ -23,9 +23,9 @@ Usage (as a script):
       --test_tsv    ./lexicons/hi.translit.sampled.test.tsv \
       --n_examples  5 \
       --output_html connectivity.html \
-      --wandb_project transliteration \
-      --wandb_run_name q6_connectivity \
-      --wandb_run_tag  q6
+      --wandb_project DA6401_Intro_to_DeepLearning_Assignment_3 \
+      --wandb_run_name solution_6_run \
+      --wandb_run_tag  solution_6
 """
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ from solution_5_model import Seq2SeqAttentionConfig, Seq2SeqAttention, _align_hi
 # Hyper-parameters for your best attention model (must match how you trained it)
 best = {
     "batch_size":        128,
-    "beam_size":         5,
+    "beam_size":         3,
     "cell_type":         "GRU",
     "decoder_layers":    3,
     "dropout":           0.2,
@@ -58,10 +58,10 @@ best = {
     "learning_rate":     0.0006899910999897612,
     "teacher_forcing":   0.5,
     "use_attestations":  True,
-    # # early stopping patience
-    # "patience":         3,
-    # # number of training epochs to try
-    # "epochs":          20,
+    # early stopping patience
+    "patience":         3,
+    # number of training epochs to try
+    "epochs":          20,
 }
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -113,7 +113,7 @@ def load_model_and_vocab(
     Loads the checkpoint into a Seq2SeqAttention model,
     and builds the vocab from the TRAIN split so that src/tgt vocabs align.
     """
-    # Build the vocabulary from the true training split
+    # 1) Build the vocabulary from the true training split
     train_ds = DakshinaLexicon(
         train_tsv,
         build_vocabs=True,
@@ -122,14 +122,38 @@ def load_model_and_vocab(
     src_vocab = train_ds.src_vocab
     tgt_vocab = train_ds.tgt_vocab
 
-    # Construct exactly the same config you used for training
+    # 2) Peek at the checkpoint to detect how many decoder layers it actually has
+    ckpt = torch.load(ckpt_path, map_location=device)
+    state_dict = ckpt["model_state_dict"]
+
+    # Collect all weight keys of the form "decoder.rnn.weight_ih_l{n}"
+    layer_indices = []
+    for key in state_dict:
+        if key.startswith("decoder.rnn.weight_ih_l"):
+            # e.g. "decoder.rnn.weight_ih_l0", "decoder.rnn.weight_ih_l1", ...
+            idx_str = key.split("decoder.rnn.weight_ih_l", 1)[1]
+            try:
+                layer_indices.append(int(idx_str))
+            except ValueError:
+                continue
+
+    if layer_indices:
+        # max index + 1 = number of layers
+        actual_decoder_layers = max(layer_indices) + 1
+        print(f"  ↳ Checkpoint has {actual_decoder_layers} decoder layers (detected)")
+    else:
+        actual_decoder_layers = best["decoder_layers"]
+        print(f"  ↳ No decoder.rnn.weight_ih_l* keys found; defaulting to {actual_decoder_layers}")
+
+    # 3) Construct exactly the same config you used for training,
+    #    except use the detected number of decoder layers:
     cfg = Seq2SeqAttentionConfig(
         source_vocab_size=src_vocab.size,
         target_vocab_size=tgt_vocab.size,
         embedding_dim=best["embedding_size"],
         hidden_dim=best["hidden_size"],
         encoder_layers=best["encoder_layers"],
-        decoder_layers=best["decoder_layers"],
+        decoder_layers=actual_decoder_layers,
         cell_type=best["cell_type"],
         dropout=best["dropout"],
         pad_index=src_vocab.stoi["<pad>"],
@@ -140,10 +164,9 @@ def load_model_and_vocab(
            if best["embedding_method"] == "svd_ppmi" else {})
     )
 
-    # Load model & weights
+    # 4) Instantiate and load
     model = Seq2SeqAttention(cfg).to(device)
-    checkpoint = torch.load(ckpt_path, map_location=device)
-    model.load_state_dict(checkpoint["model_state_dict"])
+    model.load_state_dict(state_dict)
     model.eval()
 
     return model, src_vocab, tgt_vocab

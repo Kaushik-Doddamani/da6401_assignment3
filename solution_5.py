@@ -11,13 +11,13 @@ Usage:
     python solution_5.py \
       --mode sweep \
       --sweep_config sweep_attention.yaml \
-      --wandb_project transliteration \
-      --wandb_run_tag attention \
-      --gpu_ids 0 1 \
-      --train_tsv ... \
-      --dev_tsv   ... \
-      --test_tsv  ... \
-      --sweep_count 30
+      --wandb_project DA6401_Intro_to_DeepLearning_Assignment_3 \
+      --wandb_run_tag solution_5 \
+      --gpu_ids 0 2 3 \
+      --train_tsv ./lexicons/hi.translit.sampled.train.tsv \
+      --dev_tsv   ./lexicons/hi.translit.sampled.dev.tsv \
+      --test_tsv  ./lexicons/hi.translit.sampled.test.tsv \
+      --sweep_count 75
 
     # Single debug run:
     python solution_5.py \

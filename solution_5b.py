@@ -24,8 +24,8 @@ Usage example:
       --test_tsv  ./lexicons/hi.translit.sampled.test.tsv \
       --checkpoint ./checkpoints/best_attention.pt \
       --output_dir predictions_attention \
-      --gpu_ids 0 \
-      --wandb_project transliteration \
+      --gpu_ids 3 \
+      --wandb_project DA6401_Intro_to_DeepLearning_Assignment_3 \
       --wandb_run_name solution_5b_run \
       --wandb_run_tag solution_5b
 """
@@ -68,7 +68,7 @@ else:
 # Replace these with best attention‐model hyperparameters:
 best = {
     "batch_size":        128,
-    "beam_size":         5,
+    "beam_size":         3,
     "cell_type":       "GRU",
     "decoder_layers":     2,
     "dropout":          0.2,
