@@ -2,8 +2,8 @@
 
 This repository contains solutions for character-level transliteration of Dakshina languages (Hindi) using:
 
-* A **vanilla** RNN/LSTM/GRU Seq2Seq model (`solution_1.py`, `solution_2.py`, `solution_4.py`)
-* An **attention-augmented** Seq2Seq model (`solution_5_model.py`, `solution_5.py`, `solution_5b.py`)
+* A **vanilla** RNN/LSTM/GRU Seq2Seq model (`solution_1.py`, `solution_2.py`, `solution_2b.py`, `solution_4.py`)
+* An **attention-augmented** Seq2Seq model (`solution_5_model.py`, `solution_5.py`, `solution_5a.py`, `solution_5b.py`)
 * An **interactive connectivity** visualization of attention weights (`solution_6.py`)
 * Jupyter notebooks demonstrating training and evaluation:
 
