@@ -159,6 +159,41 @@ python solution_4.py \
     --wandb_run_tag solution_4
 ```
 
+---
+
+### Common Arguments
+
+| Argument            | Description                                                                                     |
+|---------------------|-------------------------------------------------------------------------------------------------|
+| `--train_tsv`       | Path to the training lexicon TSV file (native	romanized	count)                              |
+| `--dev_tsv`         | Path to the development (validation) TSV file                                                   |
+| `--test_tsv`        | Path to the test TSV file                                                                       |
+| `--checkpoint`      | Path for saving or loading model checkpoint (`.pt` file)                                        |
+| `--output_dir`      | Directory to write predictions (TSV, CSV, and sample figure)                                    |
+| `--output_html`     | Path to save standalone HTML (for connectivity viz)                                             |
+| `--mode`            | Sweep mode (`sweep`) or single run (`single`)                                                   |
+| `--sweep_config`    | Filename of W&B sweep YAML under `configs/`                                                     |
+| `--wandb_project`   | W&B project name for logging                                                                    |
+| `--wandb_run_tag`   | Tag to attach to all W&B runs                                                                   |
+| `--wandb_run_name`  | Name of the WandB run                                                                            |
+| `--gpu_ids`         | CUDA device IDs (e.g. `0` or `0 1` for multi-GPU)                                               |
+| `--sweep_count`     | Number of trials to launch in a W&B sweep                                                        |
+| `--n_examples`      | Number of random examples to visualize (Q6)                                                      |
+| `--embedding_size`  | Dimensionality of character embeddings (`m`)                                                    |
+| `--hidden_size`     | Size of RNN hidden state (`k`)                                                                 |
+| `--encoder_layers`  | Number of stacked layers in the encoder                                                          |
+| `--decoder_layers`  | Number of stacked layers in the decoder                                                          |
+| `--cell`            | RNN cell type: `RNN`, `GRU`, or `LSTM`                                                          |
+| `--dropout`         | Dropout probability between RNN layers                                                          |
+| `--epochs`          | Number of training epochs                                                                       |
+| `--batch_size`      | Mini-batch size for training and evaluation                                                      |
+| `--learning_rate`   | Learning rate for the Adam optimizer                                                             |
+| `--teacher_forcing` | Teacher forcing ratio during decoding (`0.0`–`1.0`)                                              |
+| `--use_attestations`| Whether to sample training examples by annotator counts (`true`/`false`)                        |
+| `--beam_size`       | Beam size for beam-search decoding                                                              |
+
+---
+
 ### 2. Train & evaluate attention Seq2Seq (Q5)
 
 ```bash
