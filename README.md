@@ -16,13 +16,16 @@ This repository contains solutions for character-level transliteration of Dakshi
 
 ```
 ├── checkpoints/                # Saved model checkpoints
-│   ├── best_seq2seq.pt
-│   └── best_attention.pt
+│   ├── best_seq2seq.pt         # Vanilla Seq2Seq best model
+│   └── best_attention.pt       # Attention model best model
 ├── configs/                    # W&B sweep configurations
-│   ├── sweep_config.yaml
-│   └── sweep_attention.yaml
+│   ├── sweep_config.yaml       # Vanilla model sweep
+│   └── sweep_attention.yaml    # Attention model sweep
 ├── fonts/                      # Devanagari fonts for plotting
 ├── lexicons/                   # Dakshina train/dev/test TSV files
+│   ├── hi.translit.sampled.train.tsv
+│   ├── hi.translit.sampled.dev.tsv
+│   └── hi.translit.sampled.test.tsv
 ├── notebooks/                  # Demo notebooks
 │   ├── solution_vanilla.ipynb
 │   └── solution_attention.ipynb
@@ -30,13 +33,14 @@ This repository contains solutions for character-level transliteration of Dakshi
 ├── predictions_attention/      # Attention model outputs (TSV/CSV + heatmaps)
 ├── solution_1.py               # Q1: Vanilla Seq2Seq implementation
 ├── solution_2.py               # Q2: W&B sweep driver for vanilla model
+├── solution_2b.py              # Q2b: Beam-size tuning for vanilla model
 ├── solution_4.py               # Q4: Evaluate vanilla model on test set
 ├── solution_5_model.py         # Q5: Attention Seq2Seq model definition
 ├── solution_5.py               # Q5: W&B sweep driver for attention model
-├── solution_5b.py              # Q5.b: Evaluate attention model on test set
+├── solution_5a.py              # Q5a: Beam-size tuning for attention model
+├── solution_5b.py              # Q5b: Evaluate attention model on test set
 ├── solution_6.py               # Q6: Interactive attention heatmap generator
 ├── connectivity.html           # Exported connectivity visualization
-├── part_a.ipynb                # Starter code / reference notebook
 └── README.md                   # This file
 ```
 
@@ -48,7 +52,7 @@ This repository contains solutions for character-level transliteration of Dakshi
 git clone <repo-url>
 cd <repo-directory>
 # (Optional) create a virtual environment
-pip install -r requirements.txt
+pip install pytorch, pandas, numpy, wandb, plotly, matplotlib, wcwidth
 ```
 
 **Key dependencies:** PyTorch, pandas, numpy, wandb, plotly, matplotlib, wcwidth.
@@ -72,56 +76,99 @@ Format: `native_word \t romanized_word \t count`.
 ### 1. Train & evaluate vanilla Seq2Seq (Q1–Q4)
 
 ```bash
-# 1a) Single training run
-python solution_1.py --train_tsv lexicons/hi.translit.sampled.train.tsv \
-                    --dev_tsv   lexicons/hi.translit.sampled.dev.tsv \
-                    --test_tsv  lexicons/hi.translit.sampled.test.tsv \
-                    --embedding_size 256 --hidden_size 512 --cell LSTM \
-                    --encoder_layers 2 --decoder_layers 2 --epochs 15
+# 1) Single training run
+python solution_1.py \ 
+    --train_tsv ./lexicons/hi.translit.sampled.train.tsv \
+    --dev_tsv   ./lexicons/hi.translit.sampled.dev.tsv \
+    --test_tsv  ./lexicons/hi.translit.sampled.test.tsv \
+    --embedding_size 128 \
+    --hidden_size    256 \
+    --encoder_layers 1 \
+    --decoder_layers 1 \
+    --cell GRU \
+    --epochs 10 \
+    --embedding_method svd_ppmi \
+    --use_attestations
 
-# 1b) Hyperparameter sweep
-python solution_2.py --mode sweep --sweep_config configs/sweep_config.yaml \
-                    --wandb_project transliteration --wandb_run_tag vanilla \
-                    --train_tsv lexicons/...train.tsv \
-                    --dev_tsv lexicons/...dev.tsv --test_tsv lexicons/...test.tsv \
-                    --sweep_count 30
+# 2) Hyperparameter sweep on vanilla model
+python solution_2.py \
+    --mode sweep \
+    --sweep_config sweep_config.yaml \
+    --wandb_project DA6401_Intro_to_DeepLearning_Assignment_3 \
+    --wandb_run_tag solution_2 \
+    --gpu_ids 0 1 \
+    --train_tsv ./lexicons/hi.translit.sampled.train.tsv \
+    --dev_tsv   ./lexicons/hi.translit.sampled.dev.tsv \
+    --test_tsv  ./lexicons/hi.translit.sampled.test.tsv \
+    --sweep_count 50
 
-# 1c) Evaluate best model on test set
-python solution_4.py --train_tsv lexicons/...train.tsv \
-                    --dev_tsv   lexicons/...dev.tsv \
-                    --test_tsv  lexicons/...test.tsv \
-                    --checkpoint checkpoints/best_seq2seq.pt \
-                    --output_dir predictions_vanilla \
-                    --wandb_project transliteration --wandb_run_tag eval_vanilla
+# 2b) Beam-size tuning for vanilla model
+python solution_2b.py \
+    --train_tsv ./lexicons/hi.translit.sampled.train.tsv \
+    --dev_tsv   ./lexicons/hi.translit.sampled.dev.tsv \
+    --test_tsv  ./lexicons/hi.translit.sampled.test.tsv \
+    --gpu_ids   3
+
+# 4) Evaluate best model on test set
+python solution_4.py \
+    --train_tsv ./lexicons/hi.translit.sampled.train.tsv \
+    --dev_tsv   ./lexicons/hi.translit.sampled.dev.tsv \
+    --test_tsv  ./lexicons/hi.translit.sampled.test.tsv \
+    --checkpoint ./checkpoints/best_seq2seq.pt \
+    --output_dir predictions_vanilla \
+    --gpu_ids 3 \
+    --wandb_project transliteration \
+    --wandb_run_name solution_4_run \
+    --wandb_run_tag solution_4
 ```
 
 ### 2. Train & evaluate attention Seq2Seq (Q5)
 
 ```bash
-# 2a) Hyperparameter sweep with attention
-python solution_5.py --mode sweep --sweep_config configs/sweep_attention.yaml \
-                    --wandb_project transliteration --wandb_run_tag attention \
-                    --train_tsv lexicons/...train.tsv \
-                    --dev_tsv lexicons/...dev.tsv --test_tsv lexicons/...test.tsv \
-                    --sweep_count 30
+# 5) Hyperparameter sweep with attention
+python solution_5.py \
+    --mode sweep \
+    --sweep_config sweep_attention.yaml \
+    --wandb_project DA6401_Intro_to_DeepLearning_Assignment_3 \
+    --wandb_run_tag solution_5 \
+    --gpu_ids 0 2 3 \
+    --train_tsv ./lexicons/hi.translit.sampled.train.tsv \
+    --dev_tsv   ./lexicons/hi.translit.sampled.dev.tsv \
+    --test_tsv  ./lexicons/hi.translit.sampled.test.tsv \
+    --sweep_count 75
 
-# 2b) Evaluate best attention model
-python solution_5b.py --train_tsv lexicons/...train.tsv \
-                     --dev_tsv   lexicons/...dev.tsv \
-                     --test_tsv  lexicons/...test.tsv \
-                     --checkpoint checkpoints/best_attention.pt \
-                     --output_dir predictions_attention \
-                     --wandb_project transliteration --wandb_run_tag eval_attention
+# 5a) Beam-size tuning for attention model
+python solution_5a.py \
+    --train_tsv ./lexicons/hi.translit.sampled.train.tsv \
+    --dev_tsv   ./lexicons/hi.translit.sampled.dev.tsv \
+    --test_tsv  ./lexicons/hi.translit.sampled.test.tsv \
+    --gpu_ids   3
+
+# 5b) Evaluate best attention model
+python solution_5b.py \
+    --train_tsv ./lexicons/hi.translit.sampled.train.tsv \
+    --dev_tsv   ./lexicons/hi.translit.sampled.dev.tsv \
+    --test_tsv  ./lexicons/hi.translit.sampled.test.tsv \
+    --checkpoint ./checkpoints/best_attention.pt \
+    --output_dir predictions_attention \
+    --gpu_ids 3 \
+    --wandb_project DA6401_Intro_to_DeepLearning_Assignment_3 \
+    --wandb_run_name solution_5b_run \
+    --wandb_run_tag solution_5b
 ```
 
 ### 3. Visualize attention connectivity (Q6)
 
 ```bash
-python solution_6.py --checkpoint checkpoints/best_attention.pt \
-                     --train_tsv lexicons/...train.tsv \
-                     --test_tsv  lexicons/...test.tsv \
-                     --n_examples 5 --output_html connectivity.html \\  
-                     --wandb_project transliteration --wandb_run_tag connectivity
+python solution_6.py \
+    --checkpoint ./checkpoints/best_attention.pt \
+    --train_tsv   ./lexicons/hi.translit.sampled.train.tsv \
+    --test_tsv    ./lexicons/hi.translit.sampled.test.tsv \
+    --n_examples  5 \
+    --output_html connectivity.html \
+    --wandb_project DA6401_Intro_to_DeepLearning_Assignment_3 \
+    --wandb_run_name solution_6_run \
+    --wandb_run_tag  solution_6
 ```
 
 ---
